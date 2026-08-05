@@ -22,9 +22,15 @@ Example URL:
 index.php?username=octocat&type=user&years=5&theme=light&title=My%20Memories&showUsername=0&details=1&repoLimit=8
 */
 
+// Cache tuning. CACHE_MAX_FILES caps how many rendered banners we keep on disk
+// so the cache dir can't be spammed into filling the disk (each unique set of
+// params — including an arbitrary ?title= — produces its own key).
+const CACHE_TTL       = 14400; // seconds (4h), also mirrored in Cache-Control.
+const CACHE_MAX_FILES = 500;   // hard cap; oldest entries are evicted first.
+
 // 1. Tell the browser/GitHub that this script outputs an SVG image, not HTML
 header('Content-Type: image/svg+xml');
-header('Cache-Control: public, max-age=14400');
+header('Cache-Control: public, max-age=' . CACHE_TTL);
 
 // 2. Read the GitHub token from the environment - NEVER store it in source.
 $token = getenv('GITHUB_TOKEN') ?: '';
@@ -46,13 +52,36 @@ if ($yearsCount > 10) $yearsCount = 10;
 
 $theme = ($_GET['theme'] ?? 'dark') === 'light' ? 'light' : 'dark';
 
-$customTitle = isset($_GET['title']) ? trim($_GET['title']) : '';
+$rawTitle    = trim($_GET['title'] ?? '');
+$customTitle = function_exists('mb_substr')
+    ? mb_substr($rawTitle, 0, 100)
+    : substr($rawTitle, 0, 100);
 $showUsername = filter_var($_GET['showUsername'] ?? '1', FILTER_VALIDATE_BOOLEAN);
 
 $details  = filter_var($_GET['details'] ?? '0', FILTER_VALIDATE_BOOLEAN);
 $repoLimit = (int)($_GET['repoLimit'] ?? 5);
 if ($repoLimit < 1)  $repoLimit = 1;
 if ($repoLimit > 20) $repoLimit = 20;
+
+// 3b. Server-side cache lookup.
+// GitHub proxies this image through its Camo service, which has a short fetch
+// timeout. A cold render makes `years` sequential GitHub API calls, which can
+// blow past that timeout and make the banner appear as a broken image (i.e. a
+// bare link). Serving a cached SVG keeps cold Camo fetches well under a second.
+// The date is part of the key so the "on this day" data refreshes daily.
+$cacheDir  = sys_get_temp_dir() . '/github-memories-cache';
+$cacheKey  = md5(implode('|', [
+    $username, $accountType, $yearsCount, $theme, $customTitle,
+    $showUsername ? '1' : '0', $details ? '1' : '0', $repoLimit,
+    date('Y-m-d'),
+]));
+$cacheFile = $cacheDir . '/' . $cacheKey . '.svg';
+
+$cached = cacheGet($cacheFile, CACHE_TTL);
+if ($cached !== null) {
+    echo $cached;
+    return;
+}
 
 // 4. Theme palette
 if ($theme === 'light') {
@@ -163,7 +192,7 @@ foreach ($memories as $year => $entry) {
     }
 }
 
-header('Content-Type: image/svg+xml');
+ob_start();
 echo '<?xml version="1.0" encoding="UTF-8"?>' . "\n";
 ?>
 <svg width="<?php echo $width; ?>" height="<?php echo $height; ?>" viewBox="0 0 <?php echo $width; ?> <?php echo $height; ?>" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -180,8 +209,86 @@ echo '<?xml version="1.0" encoding="UTF-8"?>' . "\n";
     <?php echo $rows; ?>
 </svg>
 <?php
+$svgOutput = ob_get_clean();
+cachePut($cacheFile, $svgOutput);
+echo $svgOutput;
 
 // ---------- helpers ----------
+
+/**
+ * Return a cached SVG if it exists and is still within its TTL, else null.
+ */
+function cacheGet(string $file, int $ttl): ?string
+{
+    if (is_file($file) && (time() - filemtime($file)) < $ttl) {
+        $data = file_get_contents($file);
+        if ($data !== false) {
+            return $data;
+        }
+    }
+    return null;
+}
+
+/**
+ * Write the rendered SVG to the cache. Failures (e.g. an unwritable temp dir)
+ * are non-fatal: the banner still renders, it just won't be cached.
+ * The write is atomic (write-then-rename) so a concurrent request never reads
+ * a half-written file.
+ */
+function cachePut(string $file, string $data): void
+{
+    $dir = dirname($file);
+    if (!is_dir($dir) && !@mkdir($dir, 0700, true) && !is_dir($dir)) {
+        return;
+    }
+
+    // Opportunistically garbage-collect so a flood of unique keys (e.g. random
+    // ?title= values) can't fill the disk. Runs on ~2% of writes to stay cheap.
+    if (random_int(1, 50) === 1) {
+        cacheGc($dir);
+    }
+
+    $tmp = $file . '.' . getmypid() . '.tmp';
+    if (@file_put_contents($tmp, $data) !== false) {
+        @rename($tmp, $file);
+    }
+}
+
+/**
+ * Prune the cache dir: delete entries past their TTL, then, if still over the
+ * hard file cap, evict the oldest first. Also sweeps stale temp files left by
+ * interrupted writes. All operations are best-effort and never fatal.
+ */
+function cacheGc(string $dir): void
+{
+    $now = time();
+
+    // Remove orphaned temp files from interrupted writes (older than 60s).
+    foreach ((@glob($dir . '/*.tmp') ?: []) as $tmp) {
+        if (($now - (int)@filemtime($tmp)) > 60) {
+            @unlink($tmp);
+        }
+    }
+
+    // Drop anything past its TTL — it would never be served anyway.
+    $files = @glob($dir . '/*.svg') ?: [];
+    foreach ($files as $f) {
+        if (($now - (int)@filemtime($f)) >= CACHE_TTL) {
+            @unlink($f);
+        }
+    }
+
+    // Enforce the hard cap, evicting the oldest entries first.
+    $files = @glob($dir . '/*.svg') ?: [];
+    if (count($files) > CACHE_MAX_FILES) {
+        usort($files, function ($a, $b) {
+            return (int)@filemtime($a) <=> (int)@filemtime($b);
+        });
+        foreach (array_slice($files, 0, count($files) - CACHE_MAX_FILES) as $f) {
+            @unlink($f);
+        }
+    }
+}
 
 /**
  * Fetch a user's contributions on a single day.
@@ -348,7 +455,7 @@ function githubGraphql(string $payload, string $token): array
     return json_decode($response, true) ?? [];
 }
 
-function githubRest(string $path, string $token): mixed
+function githubRest(string $path, string $token)
 {
     $ch = curl_init('https://api.github.com' . $path);
     curl_setopt_array($ch, [

@@ -9,8 +9,22 @@ and embed the image anywhere that accepts a URL:
 ![My Memories](https://your-domain.com/github-memories/?username=octocat&details=1)
 ```
 
+On GitHub you can also use an HTML `<img>` tag, which lets you control the
+displayed size:
+
+```html
+<img src="https://your-domain.com/github-memories/?username=octocat&details=1" width="450" alt="My Memories">
+```
+
 Works in GitHub profile READMEs, issues, PRs, Notion, blogs, forum signatures,
 email signatures — anything that renders remote SVGs.
+
+> **Heads-up (GitHub):** GitHub never hotlinks your server directly — it
+> proxies every image through its **Camo** cache
+> (`camo.githubusercontent.com`), which has a short fetch timeout. If your
+> banner ever appears as a *bare link* instead of an image, Camo timed out
+> fetching a cold render. This project caches renders server-side to keep cold
+> fetches fast; see [Troubleshooting](#troubleshooting).
 
 ---
 
@@ -145,8 +159,71 @@ Use the script URL as an image source anywhere:
 ![My GitHub Memories](https://your-domain.com/github-memories/?username=octocat&details=1)
 ```
 
-That's it. The banner is cached for 4 hours per viewer to keep you well
-within GitHub's rate limits.
+On GitHub, an HTML `<img>` tag works too and lets you set the display width:
+
+```html
+<img src="https://your-domain.com/github-memories/?username=octocat&details=1" width="450" alt="My GitHub Memories">
+```
+
+That's it. The banner is cached **server-side for 4 hours** (in the system
+temp dir, keyed by parameters + the day) and also sends a 4-hour
+`Cache-Control` header. The server-side cache is what keeps GitHub's Camo
+proxy from timing out on a cold fetch — see
+[Troubleshooting](#troubleshooting) if the image shows up as a link.
+
+The on-disk cache is self-limiting: entries past their TTL are pruned and a
+hard file cap (`CACHE_MAX_FILES`, default 500, oldest evicted first) keeps a
+flood of unique URLs — e.g. random `?title=` values — from filling the disk.
+
+### 5. (Optional) Cache at the web-server level
+
+The PHP disk cache already makes cold renders fast. If you want Apache to
+serve repeat requests **without invoking PHP at all**, add a `.htaccess` in
+the banner's directory.
+
+First, reinforce the caching headers (works entirely in `.htaccess`, requires
+`mod_headers` + `mod_expires`):
+
+```apache
+# .htaccess — /var/www/html/github-memories/
+<IfModule mod_expires.c>
+    ExpiresActive On
+    ExpiresByType image/svg+xml "access plus 4 hours"
+</IfModule>
+
+<IfModule mod_headers.c>
+    Header set Cache-Control "public, max-age=14400"
+    # Vary on the query string so different banners aren't served the wrong cache.
+    Header append Vary "Accept-Encoding"
+</IfModule>
+```
+
+For a true **server-side response cache** (Apache stores the rendered SVG and
+skips PHP on a hit), use `mod_cache` + `mod_cache_disk`. Note that `CacheRoot`
+and `CacheEnable` are **not** allowed in `.htaccess` — they must live in your
+`httpd.conf` / vhost:
+
+```apache
+# httpd.conf or your <VirtualHost> — NOT .htaccess
+LoadModule cache_module        modules/mod_cache.so
+LoadModule cache_disk_module   modules/mod_cache_disk.so
+
+CacheRoot   /var/cache/apache2/github-memories
+CacheEnable disk /github-memories/
+CacheDirLevels 2
+CacheDirLength 1
+# Honor the Cache-Control: max-age the script emits, and cache query-string URLs.
+CacheIgnoreQueryString Off
+CacheQuickHandler on
+```
+
+Because the script sends `Cache-Control: public, max-age=14400`, `mod_cache`
+will cache each distinct banner URL (query string included) for 4 hours and
+serve it straight from disk, so neither PHP nor the GitHub API is hit on a
+cache hit. Keep the Apache TTL aligned with `CACHE_TTL` in `index.php`.
+
+> nginx equivalent: use `fastcgi_cache` with a key that includes
+> `$request_uri` and `fastcgi_cache_valid 200 4h;`.
 
 ---
 
@@ -231,6 +308,20 @@ blog post), consider:
 ---
 
 ## Troubleshooting
+
+**On GitHub the banner shows as a plain link (e.g. just the word "Demo"), not an image**
+This is a GitHub **Camo** timeout, not a markdown problem — `![alt](url)` is
+correct. GitHub proxies the image through `camo.githubusercontent.com`, which
+gives up if your server is slow to respond, and a broken proxied image falls
+back to its `alt` text (which GitHub wraps in a link). Causes and fixes:
+- **Cold render is too slow.** Each fresh render makes one GitHub API call per
+  sampled year. This project caches renders server-side (system temp dir) so
+  subsequent Camo fetches return in well under a second — make sure that temp
+  dir is writable by the PHP process.
+- **Warm it up.** Once Camo successfully caches a render it keeps serving it;
+  open the raw banner URL in a browser (or `curl` it) once, then hard-refresh
+  the GitHub page.
+- **Keep `years` low** (the default `3` is fine) so cold renders stay fast.
 
 **Banner shows `_GitHub Memories - Error: GITHUB_TOKEN env var is not set_`**
 The `GITHUB_TOKEN` environment variable isn't visible to the PHP process.
