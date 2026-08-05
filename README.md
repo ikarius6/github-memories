@@ -32,7 +32,7 @@ email signatures — anything that renders remote SVGs.
 
 A live deployment is running at:
 
-![Demo](https://alexomar.com/github-memories/?username=ikarius6&type=user&years=3&theme=light&title=My%20Memories&showUsername=1&details=1)
+![Demo](https://alexomar.com/github-memories/?username=ikarius6&type=user&years=3&theme=light&title=My%20Memories&showUsername=1&showDate=1&details=1)
 
 Try changing the query string to see the banner react in real time:
 
@@ -42,6 +42,7 @@ Try changing the query string to see the banner react in real time:
 | 5 years back | `?username=octocat&years=5` |
 | Org mode | `?type=org&username=github` |
 | Custom title, hide username | `?username=octocat&title=My%20Memories&showUsername=0` |
+| Custom title, keep the date | `?username=octocat&title=My%20Memories&showDate=1` |
 | Full breakdown, 8 repos/year | `?username=octocat&details=1&repoLimit=8` |
 
 ---
@@ -237,8 +238,9 @@ All parameters are optional. Defaults are shown in **bold**.
 | `type` | **`user`** | `user`, `org` | `user` queries GitHub's GraphQL contributions calendar. `org` falls back to REST repo-commits (no contributionsCalendar exists for orgs). |
 | `years` | **`3`** | `1`–`10` | How many years back to sample (1 = just last year, 5 = five years back, etc.). |
 | `theme` | **`dark`** | `dark`, `light` | Color palette. |
-| `title` | _(auto)_ | any text | Custom title. When omitted, the banner uses `On This Day (Mon D) - {username}'s Memories`. |
+| `title` | _(auto)_ | any text (max 100 chars) | Custom title. When omitted, the banner uses `On This Day (Mon D) - {username}'s Memories`. |
 | `showUsername` | **`1`** | `0`, `1` | When `0`, the username is omitted from the title (useful with a custom `title`). |
+| `showDate` | _(auto)_ | `0`, `1` | Prepend the `On This Day (Mon D)` date to the title. Defaults to `1` for the auto title and `0` when a custom `title` is set — pass it explicitly to override (e.g. keep the date alongside a custom title). |
 | `details` | **`0`** | `0`, `1` | When `1`, render a per-repo commit breakdown with clickable links to GitHub's commits view filtered by author + that day. |
 | `repoLimit` | **`5`** | `1`–`20` | Max repos shown per year when `details=1`. Repos are sorted by commit count desc. |
 
@@ -256,6 +258,9 @@ All parameters are optional. Defaults are shown in **bold**.
 
 # Custom title, username hidden
 ?username=octocat&title=My%20Memories&showUsername=0
+
+# Custom title but keep the "On This Day (Mon D)" prefix
+?username=octocat&title=My%20Memories&showDate=1
 ```
 
 ---

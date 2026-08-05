@@ -58,6 +58,13 @@ $customTitle = function_exists('mb_substr')
     : substr($rawTitle, 0, 100);
 $showUsername = filter_var($_GET['showUsername'] ?? '1', FILTER_VALIDATE_BOOLEAN);
 
+// showDate: prepend the "On This Day (Mon D)" date to the title. When not
+// explicitly set, default to the historical behavior — shown for the auto
+// title, hidden when a custom title is supplied.
+$showDate = isset($_GET['showDate'])
+    ? filter_var($_GET['showDate'], FILTER_VALIDATE_BOOLEAN)
+    : ($customTitle === '');
+
 $details  = filter_var($_GET['details'] ?? '0', FILTER_VALIDATE_BOOLEAN);
 $repoLimit = (int)($_GET['repoLimit'] ?? 5);
 if ($repoLimit < 1)  $repoLimit = 1;
@@ -72,7 +79,8 @@ if ($repoLimit > 20) $repoLimit = 20;
 $cacheDir  = sys_get_temp_dir() . '/github-memories-cache';
 $cacheKey  = md5(implode('|', [
     $username, $accountType, $yearsCount, $theme, $customTitle,
-    $showUsername ? '1' : '0', $details ? '1' : '0', $repoLimit,
+    $showUsername ? '1' : '0', $showDate ? '1' : '0',
+    $details ? '1' : '0', $repoLimit,
     date('Y-m-d'),
 ]));
 $cacheFile = $cacheDir . '/' . $cacheKey . '.svg';
@@ -129,13 +137,13 @@ for ($i = 1; $i <= $yearsCount; $i++) {
 }
 
 // 6. Build the title text
+$titleText = $showDate ? 'On This Day (' . $todayLabel . ') - ' : '';
 if ($customTitle !== '') {
-    $titleText = $customTitle;
+    $titleText .= $customTitle;
     if ($showUsername) {
         $titleText .= ' - ' . $username;
     }
 } else {
-    $titleText = 'On This Day (' . $todayLabel . ') - ';
     $titleText .= $showUsername ? $username . "'s Memories" : 'Memories';
 }
 
